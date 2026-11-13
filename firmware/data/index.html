@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Classroom — Local Status</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; margin: 0; padding: 16px; color: #0f172a; }
+    .container { max-width: 680px; margin: 0 auto; }
+    .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .title { font-size: 20px; font-weight: 700; margin: 0; }
+    .badges { display: flex; gap: 8px; align-items: center; }
+    .badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #e2e8f0; }
+    .badge-live { background: #dcfce7; color: #166534; }
+    .badge-offline { background: #fee2e2; color: #991b1b; }
+    .banner { display: none; padding: 14px 16px; border-radius: 12px; font-weight: 700; margin-bottom: 14px; color: #fff; background: #dc2626; text-align: center; font-size: 16px; }
+    .banner.show { display: block; }
+    .banner-warn { background: #ea580c; }
+    .card { background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 2px 8px rgba(15,23,42,0.06); }
+    .card-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+    .stat { background: #f8fafc; border-radius: 10px; padding: 10px; text-align: center; }
+    .val { font-size: 20px; font-weight: 700; }
+    .lbl { font-size: 11px; color: #64748b; margin-top: 3px; }
+    .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
+    .row:last-child { border-bottom: none; }
+    .btn { padding: 8px 14px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px; }
+    .btn-red { background: #dc2626; color: #fff; }
+    .btn-blue { background: #2563eb; color: #fff; }
+    input { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; }
+    .footer { text-align: center; font-size: 11px; color: #94a3b8; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1 class="title">Smart Classroom (<span id="device_id">T07-D1</span>)</h1>
+      <div class="badges">
+        <span class="badge" id="room_id">-</span>
+        <span class="badge" id="conn_state">OFFLINE</span>
+      </div>
+    </div>
+
+    <div id="fire_banner" class="banner">FIRE – EVACUATE</div>
+    <div id="panic_banner" class="banner banner-warn">PANIC ACTIVATED</div>
+    <div id="silence_banner" class="banner banner-warn">CANNOT SILENCE – FLAME PRESENT</div>
+
+    <div class="card">
+      <div class="card-title">Safety &amp; Door</div>
+      <div class="grid">
+        <div class="stat"><div class="val" id="status">SAFE</div><div class="lbl">Status</div></div>
+        <div class="stat"><div class="val" id="door">LOCKED</div><div class="lbl">Door</div></div>
+        <div class="stat"><div class="val" id="flame">NO</div><div class="lbl">Flame</div></div>
+        <div class="stat"><div class="val" id="quality">good</div><div class="lbl">Data Quality</div></div>
+      </div>
+      <div id="fire_reset_box" style="display:none; margin-top:12px; text-align:center;">
+        <button class="btn btn-red" onclick="resetFire()">Teacher/Admin: Reset Fire</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Environment</div>
+      <div class="grid">
+        <div class="stat"><div class="val"><span id="temp_c">-</span> &deg;C</div><div class="lbl">Temperature</div></div>
+        <div class="stat"><div class="val"><span id="rh">-</span> %</div><div class="lbl">Humidity</div></div>
+        <div class="stat"><div class="val"><span id="heat_index_c">-</span> &deg;C</div><div class="lbl">Heat Index</div></div>
+        <div class="stat"><div class="val" id="heat_trend">STABLE</div><div class="lbl">Heat Trend</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">System &amp; Access</div>
+      <div class="row"><span>Local Time (Asia/Dhaka)</span><strong id="local_time">-</strong></div>
+      <div class="row"><span>Last Card UID</span><strong id="last_card_uid">-</strong></div>
+      <div class="row"><span>Wi-Fi Signal (RSSI)</span><strong><span id="rssi">-</span> dBm</strong></div>
+      <div class="row"><span>Chip Temperature</span><strong><span id="chip_temp_c">-</span> &deg;C</strong></div>
+      <div class="row"><span>Firmware Version</span><strong id="fw">1.0.0</strong></div>
+      <div class="row"><span>Uptime</span><strong><span id="uptime_s">0</span> s</strong></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Teacher Tag Registration (NVS)</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <input id="tag_uid" placeholder="UID e.g. A1:B2:C3:D4" style="flex:1;">
+        <button class="btn btn-blue" onclick="addTeacher()">Add Teacher Tag</button>
+      </div>
+      <div id="tag_msg" style="font-size:12px; color:#64748b; margin-top:6px;"></div>
+    </div>
+
+    <div class="footer">FastRobox 1.0 (BUBT) &bull; LittleFS Local Status Page &bull; Auto-updates every 1.5s</div>
+  </div>
+
+  <script>
+    async function refresh() {
+      try {
+        const r = await fetch('/api/status');
+        if (!r.ok) return;
+        const d = await r.json();
+        document.getElementById('device_id').textContent = d.device_id;
+        document.getElementById('room_id').textContent = d.room_id;
+        const cb = document.getElementById('conn_state');
+        cb.textContent = d.conn_state;
+        cb.className = 'badge ' + (d.conn_state === 'LIVE' ? 'badge-live' : 'badge-offline');
+
+        document.getElementById('status').textContent = d.status;
+        document.getElementById('door').textContent = d.door;
+        document.getElementById('flame').textContent = d.flame ? 'DETECTED' : 'NO';
+        document.getElementById('quality').textContent = d.quality;
+        document.getElementById('temp_c').textContent = d.temp_c.toFixed(1);
+        document.getElementById('rh').textContent = d.rh;
+        document.getElementById('heat_index_c').textContent = d.heat_index_c.toFixed(1);
+        document.getElementById('heat_trend').textContent = d.heat_trend;
+        document.getElementById('local_time').textContent = d.local_time;
+        document.getElementById('last_card_uid').textContent = d.last_card_uid;
+        document.getElementById('rssi').textContent = d.rssi;
+        document.getElementById('chip_temp_c').textContent = d.chip_temp_c.toFixed(1);
+        document.getElementById('fw').textContent = d.fw;
+        document.getElementById('uptime_s').textContent = d.uptime_s;
+
+        document.getElementById('fire_banner').className = 'banner' + (d.fire_latched ? ' show' : '');
+        document.getElementById('panic_banner').className = 'banner banner-warn' + (d.panic_active ? ' show' : '');
+        document.getElementById('silence_banner').className = 'banner banner-warn' + (d.silence_refused ? ' show' : '');
+        document.getElementById('fire_reset_box').style.display = d.fire_latched ? 'block' : 'none';
+      } catch (e) {}
+    }
+
+    async function resetFire() {
+      await fetch('/api/fire/reset', { method: 'POST' });
+      refresh();
+    }
+
+    async function addTeacher() {
+      const uid = document.getElementById('tag_uid').value.trim();
+      if (!uid) return;
+      const r = await fetch('/api/teacher/add?uid=' + encodeURIComponent(uid), { method: 'POST' });
+      const d = await r.json();
+      document.getElementById('tag_msg').textContent = d.ok ? ('Added: ' + d.uid) : 'Failed';
+      document.getElementById('tag_uid').value = '';
+    }
+
+    refresh();
+    setInterval(refresh, 1500);
+  </script>
+</body>
+</html>
+
