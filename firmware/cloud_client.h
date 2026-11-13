@@ -123,35 +123,67 @@ private:
         }
     }
 
-    bool postJson(const String& path, const String& payload) {
-        String baseUrl = wifiPortal.getServerUrl();
-        if (baseUrl.length() == 0) return false;
+    bool isFirestoreUrl(const String& baseUrl) const {
+        return baseUrl.indexOf("firestore.googleapis.com") >= 0;
+    }
 
+    bool sendHttp(const String& method, const String& url, const String& payload, bool sendBearerAuth) {
         WiFiClientSecure client;
-        if (baseUrl.startsWith("https://")) {
+        if (url.startsWith("https://")) {
             client.setCACert(ROOT_CA_PEM);
         }
 
         HTTPClient http;
         http.setTimeout(3500);
-        String url = baseUrl + path;
-        bool began = baseUrl.startsWith("https://")
+        bool began = url.startsWith("https://")
             ? http.begin(client, url)
             : http.begin(url);
         if (!began) return false;
 
         http.addHeader("Content-Type", "application/json");
-        String tok = wifiPortal.getDeviceToken();
-        if (tok.length() > 0) {
-            http.addHeader("Authorization", "Bearer " + tok);
+        if (sendBearerAuth) {
+            String tok = wifiPortal.getDeviceToken();
+            if (tok.length() > 0) {
+                http.addHeader("Authorization", "Bearer " + tok);
+            }
         }
 
-        int code = http.POST(payload);
+        int code = (method == "PATCH") ? http.PATCH(payload) : http.POST(payload);
         http.end();
 
-        bool ok = (code >= 200 && code < 300) || (code == 409); // 409 = replay rejected by server
+        bool ok = (code >= 200 && code < 300) || (code == 409); // 409 = replay rejected
         updateServerState(ok);
         return (code >= 200 && code < 300);
+    }
+
+    bool postJson(const String& path, const String& payload) {
+        String baseUrl = wifiPortal.getServerUrl();
+        if (baseUrl.length() == 0) return false;
+        while (baseUrl.endsWith("/")) baseUrl.remove(baseUrl.length() - 1);
+        return sendHttp("POST", baseUrl + path, payload, true);
+    }
+
+    String buildFirestoreUrl(String baseUrl, const String& pathAndQuery) const {
+        while (baseUrl.endsWith("/")) baseUrl.remove(baseUrl.length() - 1);
+        String url = baseUrl + pathAndQuery;
+        String tok = wifiPortal.getDeviceToken();
+        if (tok.startsWith("AIza")) {
+            url += (url.indexOf('?') >= 0 ? "&key=" : "?key=") + tok;
+        }
+        return url;
+    }
+
+    void fsSetStr(JsonObject fields, const char* key, const String& val) {
+        fields[key]["stringValue"] = val;
+    }
+    void fsSetInt(JsonObject fields, const char* key, int64_t val) {
+        fields[key]["integerValue"] = String((long long)val);
+    }
+    void fsSetDbl(JsonObject fields, const char* key, double val) {
+        fields[key]["doubleValue"] = val;
+    }
+    void fsSetBool(JsonObject fields, const char* key, bool val) {
+        fields[key]["booleanValue"] = val;
     }
 
 public:
@@ -194,20 +226,40 @@ public:
             return;
         }
 
+        String baseUrl = wifiPortal.getServerUrl();
+        bool useFirestore = isFirestoreUrl(baseUrl);
+
         // 1. Drain event queue immediately
         QueuedDeviceEvent evt;
         while (eventQueue && xQueueReceive(eventQueue, &evt, 0) == pdTRUE) {
-            StaticJsonDocument<384> doc;
-            doc["device_id"] = DEVICE_ID;
-            doc["room_id"] = wifiPortal.getRoomID();
-            doc["seq"] = nextSeq();
-            doc["ts"] = (evt.ts > 0) ? evt.ts : getUnixUtc();
-            doc["type"] = evt.type;
-            doc["detail"] = evt.detail;
+            uint32_t seq = nextSeq();
+            uint64_t ts = (evt.ts > 0) ? evt.ts : getUnixUtc();
+            if (useFirestore) {
+                StaticJsonDocument<1024> doc;
+                JsonObject fields = doc.createNestedObject("fields");
+                fsSetStr(fields, "device_id", DEVICE_ID);
+                fsSetStr(fields, "room_id", wifiPortal.getRoomID());
+                fsSetInt(fields, "seq", seq);
+                fsSetInt(fields, "ts", ts);
+                fsSetStr(fields, "type", evt.type);
+                fsSetStr(fields, "detail", evt.detail);
+                String payload;
+                serializeJson(doc, payload);
+                String docId = String(DEVICE_ID) + "_" + String(seq);
+                sendHttp("POST", buildFirestoreUrl(baseUrl, "/events?documentId=" + docId), payload, false);
+            } else {
+                StaticJsonDocument<384> doc;
+                doc["device_id"] = DEVICE_ID;
+                doc["room_id"] = wifiPortal.getRoomID();
+                doc["seq"] = seq;
+                doc["ts"] = ts;
+                doc["type"] = evt.type;
+                doc["detail"] = evt.detail;
 
-            String payload;
-            serializeJson(doc, payload);
-            postJson("/api/events", payload);
+                String payload;
+                serializeJson(doc, payload);
+                postJson("/api/events", payload);
+            }
         }
 
         // 2. Periodic telemetry every 5s
@@ -216,28 +268,66 @@ public:
             lastTelemetrySync = now;
 
             SensorReadings s = sensors.getLatest();
-            StaticJsonDocument<512> doc;
-            doc["device_id"] = DEVICE_ID;
-            doc["room_id"] = wifiPortal.getRoomID();
-            doc["seq"] = nextSeq();
-            doc["ts"] = getUnixUtc();
-            doc["uptime_s"] = uptimeSec;
-            doc["temp_c"] = roundf(s.temperature * 10.0f) / 10.0f;
-            doc["rh"] = (int)roundf(s.humidity);
-            doc["heat_index_c"] = roundf(s.heatIndex * 10.0f) / 10.0f;
-            doc["flame"] = s.flameDetected;
-            doc["door"] = door.getStateString();
-            doc["status"] = safetyStatusStr;
-            doc["heat_trend"] = sensors.getTrendString();
-            doc["rssi"] = wifiPortal.getRSSI();
-            doc["heap_kb"] = ESP.getFreeHeap() / 1024;
-            doc["chip_temp_c"] = roundf(chipTempC * 10.0f) / 10.0f;
-            doc["fw"] = FIRMWARE_VERSION;
-            doc["quality"] = s.qualityGood ? "good" : "bad";
+            uint32_t seq = nextSeq();
+            uint64_t ts = getUnixUtc();
+            double tempC = roundf(s.temperature * 10.0f) / 10.0f;
+            int rh = (int)roundf(s.humidity);
+            double hiC = roundf(s.heatIndex * 10.0f) / 10.0f;
+            double chipC = roundf(chipTempC * 10.0f) / 10.0f;
+            int rssi = wifiPortal.getRSSI();
+            uint32_t heapKb = ESP.getFreeHeap() / 1024;
+            const char* qual = s.qualityGood ? "good" : "bad";
 
-            String payload;
-            serializeJson(doc, payload);
-            postJson("/api/telemetry", payload);
+            if (useFirestore) {
+                StaticJsonDocument<1536> doc;
+                JsonObject fields = doc.createNestedObject("fields");
+                fsSetStr(fields, "device_id", DEVICE_ID);
+                fsSetStr(fields, "room_id", wifiPortal.getRoomID());
+                fsSetInt(fields, "seq", seq);
+                fsSetInt(fields, "ts", ts);
+                fsSetInt(fields, "uptime_s", uptimeSec);
+                fsSetDbl(fields, "temp_c", tempC);
+                fsSetInt(fields, "rh", rh);
+                fsSetDbl(fields, "heat_index_c", hiC);
+                fsSetBool(fields, "flame", s.flameDetected);
+                fsSetStr(fields, "door", door.getStateString());
+                fsSetStr(fields, "status", safetyStatusStr);
+                fsSetStr(fields, "heat_trend", sensors.getTrendString());
+                fsSetInt(fields, "rssi", rssi);
+                fsSetInt(fields, "heap_kb", heapKb);
+                fsSetDbl(fields, "chip_temp_c", chipC);
+                fsSetStr(fields, "fw", FIRMWARE_VERSION);
+                fsSetStr(fields, "quality", qual);
+
+                String payload;
+                serializeJson(doc, payload);
+                String docId = String(DEVICE_ID) + "_" + String(seq);
+                sendHttp("POST", buildFirestoreUrl(baseUrl, "/telemetry?documentId=" + docId), payload, false);
+                sendHttp("PATCH", buildFirestoreUrl(baseUrl, "/devices/" + String(DEVICE_ID)), payload, false);
+            } else {
+                StaticJsonDocument<512> doc;
+                doc["device_id"] = DEVICE_ID;
+                doc["room_id"] = wifiPortal.getRoomID();
+                doc["seq"] = seq;
+                doc["ts"] = ts;
+                doc["uptime_s"] = uptimeSec;
+                doc["temp_c"] = tempC;
+                doc["rh"] = rh;
+                doc["heat_index_c"] = hiC;
+                doc["flame"] = s.flameDetected;
+                doc["door"] = door.getStateString();
+                doc["status"] = safetyStatusStr;
+                doc["heat_trend"] = sensors.getTrendString();
+                doc["rssi"] = rssi;
+                doc["heap_kb"] = heapKb;
+                doc["chip_temp_c"] = chipC;
+                doc["fw"] = FIRMWARE_VERSION;
+                doc["quality"] = qual;
+
+                String payload;
+                serializeJson(doc, payload);
+                postJson("/api/telemetry", payload);
+            }
         }
     }
 };

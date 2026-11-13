@@ -10,10 +10,18 @@ import { RemoteConfigCard } from './components/RemoteConfigCard';
 import { CameraVisionCard } from './components/CameraVisionCard';
 import { SurfacesModal } from './components/SurfacesModal';
 import { DoorState, SensorData, AttendanceRecord, EventLog, RemoteConfig } from './types';
-import { subscribeToRoomStatus, pushRemoteConfig, pushEventLog } from './firebase';
+import {
+  subscribeToDeviceStatus,
+  subscribeToTelemetryRecords,
+  subscribeToEvents,
+  pushRemoteConfig,
+  pushEventLog,
+  TelemetryRecord
+} from './firebase';
 
 export default function App() {
-  const [roomId] = useState<string>("ROOM-301");
+  const [roomId, setRoomId] = useState<string>("ROOM-301");
+  const [telemetryRecords, setTelemetryRecords] = useState<TelemetryRecord[]>([]);
   const [isSurfacesModalOpen, setIsSurfacesModalOpen] = useState(false);
 
   // Sensor & Telemetry State
@@ -72,17 +80,35 @@ export default function App() {
     faceDetectionEnabled: true
   });
 
-  // Subscribe to Firebase real-time updates
+  // Subscribe to Firestore real-time updates (device 16-D1, telemetry, events)
   useEffect(() => {
-    const unsubscribe = subscribeToRoomStatus(roomId, (newData) => {
+    const unsubDevice = subscribeToDeviceStatus('16-D1', (newData) => {
+      if (newData.room_id) setRoomId(newData.room_id);
       setSensorData(prev => ({
         ...prev,
         ...newData,
-        isOnline: true
+        isOnline: newData.lastSeen ? (Date.now() - newData.lastSeen < 25000) : true
       }));
     });
-    return () => unsubscribe();
-  }, [roomId]);
+    const unsubTel = subscribeToTelemetryRecords((records) => {
+      setTelemetryRecords(records);
+    });
+    const unsubEvt = subscribeToEvents((events) => {
+      if (events.length > 0) setEventLogs(events);
+    });
+    const offlineTimer = setInterval(() => {
+      setSensorData(prev => ({
+        ...prev,
+        isOnline: (Date.now() - prev.lastSeen) < 25000
+      }));
+    }, 1000);
+    return () => {
+      unsubDevice();
+      unsubTel();
+      unsubEvt();
+      clearInterval(offlineTimer);
+    };
+  }, []);
 
   // Toggle Door Action
   const handleToggleDoor = () => {
@@ -211,6 +237,54 @@ export default function App() {
             />
           </div>
         </div>
+
+        {/* LIVE FIRESTORE DATABASE RECORDS */}
+        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-slate-900">Live Firestore Telemetry Records (Latest 20)</h2>
+            <span className="text-xs font-mono text-slate-500">Collection: telemetry · Device: 16-D1</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-mono">
+              <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <tr>
+                  <th className="py-2 px-3">seq</th>
+                  <th className="py-2 px-3">device_id</th>
+                  <th className="py-2 px-3">room_id</th>
+                  <th className="py-2 px-3">temp_c</th>
+                  <th className="py-2 px-3">rh</th>
+                  <th className="py-2 px-3">flame</th>
+                  <th className="py-2 px-3">door</th>
+                  <th className="py-2 px-3">status</th>
+                  <th className="py-2 px-3">ts</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {telemetryRecords.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-4 text-center text-slate-400">
+                      Waiting for Firestore telemetry records from 16-D1...
+                    </td>
+                  </tr>
+                ) : (
+                  telemetryRecords.map((r) => (
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="py-2 px-3 font-bold text-slate-800">{r.seq}</td>
+                      <td className="py-2 px-3">{r.device_id}</td>
+                      <td className="py-2 px-3">{r.room_id}</td>
+                      <td className="py-2 px-3">{r.temp_c}°C</td>
+                      <td className="py-2 px-3">{r.rh}%</td>
+                      <td className="py-2 px-3">{r.flame ? '1' : '0'}</td>
+                      <td className="py-2 px-3">{r.door}</td>
+                      <td className="py-2 px-3">{r.status}</td>
+                      <td className="py-2 px-3">{r.ts}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
       </main>
 
