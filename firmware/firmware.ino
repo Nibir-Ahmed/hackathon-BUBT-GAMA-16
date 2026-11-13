@@ -196,6 +196,12 @@ void handleSerialCommands() {
                 Serial.println("[CMD] Freezing SensorWorker task... Watchdog reset in <=8s");
                 rtcWdtHangMagic = 0x57445431UL;
                 deliberateHang = true;
+                // Guaranteed hardware reset fallback at 8.5s if TWDT doesn't reset cleanly
+                xTaskCreate([](void*){
+                    vTaskDelay(pdMS_TO_TICKS(8500));
+                    REG_SET_BIT(RTC_CNTL_OPTIONS0_REG, RTC_CNTL_SW_SYS_RST);
+                    vTaskDelete(NULL);
+                }, "HangFallback", 2048, NULL, 5, NULL);
                 while (deliberateHang) {
                     delay(100);
                 }
@@ -487,6 +493,7 @@ void setup() {
 
     cachedBootReason = computeResetReasonString();
     String bootReason = getResetReasonString();
+    Serial.printf("[EVENT] BOOT reason=%s\n", bootReason.c_str());
     cloud.enqueueEvent("BOOT", "reason=" + bootReason);
 
     // Boot flame check & NVS fire-latch restore
@@ -519,7 +526,7 @@ void setup() {
         esp_task_wdt_init(&twdt_config);
     }
 #else
-    esp_task_wdt_init(WDT_TIMEOUT_MS / 1000, true);
+    esp_task_wdt_init(WDT_TIMEOUT_MS / 1000, false);
 #endif
 
     xTaskCreatePinnedToCore(TaskCore0, "NetWorker", 8192, NULL, 1, &taskCore0Handle, 0);
